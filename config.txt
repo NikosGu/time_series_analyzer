@@ -1,0 +1,4 @@
+host = localhost
+user = root
+password = your_new_password
+db_name = test_db
