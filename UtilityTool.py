@@ -311,10 +311,6 @@ class UtilityTool(tk.Tk):
         self.canvas.draw()
 
         self.plot_data_button.config(state="normal")
-
-
-
-            
     
     def disconnect(self):
         if self.connection is not None:
