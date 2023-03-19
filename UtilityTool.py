@@ -14,6 +14,11 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 import os
+import statsmodels.api as sm
+import matplotlib.pyplot as plt
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.graphics.tsaplots import plot_acf
+from typing import List
 
 class UtilityTool(tk.Tk):
     def __init__(self):
@@ -71,7 +76,10 @@ class UtilityTool(tk.Tk):
 
         # Create a button to plot data
         self.plot_data_button = tk.Button(self, text="Plot Data", command=self.plot_data)
-        self.plot_data_button.grid(row=11, column=0, columnspan=2)
+        self.plot_data_button.grid(row=11, column=0, columnspan=1)
+        
+        self.analyze_stationarity_and_acf_button = tk.Button(self, text="Analyze Stationarity and ACF", command=self.analyze_stationarity_and_acf)
+        self.analyze_stationarity_and_acf_button.grid(row=11, column=0, columnspan=2)
         
         self.canvas_frame = tk.Frame(self)
         self.canvas_frame.grid(row=12, column=0, columnspan=2, sticky="nsew")
@@ -256,8 +264,20 @@ class UtilityTool(tk.Tk):
 
         self.selected_item = item_data
 
+    def replace_values_above_threshold_and_nans(self, df, threshold):
+        column = self.selected_column
         
+        # Create a mask for values that meet the threshold criterion
+        mask = df[column].abs() < threshold
         
+        # Calculate the mean of the values that are below the threshold
+        mean_value = df.loc[mask, column].mean()
+        
+        # Replace the values above the threshold and NaNs with the mean value
+        df[column] = df[column].where(mask, mean_value)
+        df[column].fillna(mean_value, inplace=True)
+        
+        return df
     #schedules the plot_data method to run in the different thread:
     def plot_data(self):
         plot_thread = threading.Thread(target=self.plot_data_thread)
@@ -288,11 +308,12 @@ class UtilityTool(tk.Tk):
         df = pd.DataFrame(result, columns=column_names)
         # Close the cursor
         cursor.close()
-
+        
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df = df.set_index('timestamp')
         # Sort the DataFrame by timestamp and the selected column
         df_selected = pd.DataFrame(pd.to_numeric(df[self.selected_column], errors='coerce'), columns=df.columns)
+        df_selected = self.replace_values_above_threshold_and_nans(df_selected, 10000)
         # Clear the previous plot if any
         self.ax.cla()
 
@@ -312,6 +333,95 @@ class UtilityTool(tk.Tk):
 
         self.plot_data_button.config(state="normal")
     
+    def analyze_stationarity_and_acf(self):
+        analyze_thread = threading.Thread(target=self.stationarity_analysis_thread)
+        analyze_thread.start()
+    
+    
+
+    def stationarity_analysis_thread(self):
+        self.analyze_stationarity_and_acf_button.config(state='disabled')
+        cursor = self.connection.cursor()
+        start_date = self.start_date_entry.get()
+        end_date = self.end_date_entry.get()
+        sql_query = f"SELECT timestamp, {self.selected_column} FROM {self.selected_table} WHERE timestamp >= '{start_date}' AND timestamp <= '{end_date}'"
+        cursor.execute(sql_query)
+        result = cursor.fetchall()
+        column_names = [column[0] for column in cursor.description]
+        df = pd.DataFrame(result, columns=column_names)
+        cursor.close()
+        
+
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df = df.set_index('timestamp')
+        df_selected = pd.DataFrame(pd.to_numeric(df[self.selected_column], errors='coerce'), columns=df.columns).fillna(df[self.selected_column].mean)
+        df_selected = self.replace_values_above_threshold_and_nans(df_selected, 10000)
+        # Split into subsequences
+        subsequences = []
+        for value, group in df_selected.groupby((df_selected[self.selected_column] == 0).cumsum()):
+            if not group[self.selected_column].eq(0).all():
+                subsequences.append(group)
+
+        # Perform ADF test and check the convergence of the autocorrelation function for each subsequence
+        stationary_subsequences = []
+        non_stationary_subsequences = []
+        for subsequence in subsequences:
+            if len(subsequence) < 60:
+                continue
+            result = adfuller(subsequence[self.selected_column])
+            adf_p_value = result[1]
+            if adf_p_value < 0.05:
+                stationary_subsequences.append(subsequence)  # Threshold for stationarity
+                # acf_values = sm.tsa.acf(subsequence[self.selected_column], nlags=40, fft=False, alpha=None)
+                # if self.autocorrelation_converges_to_zero(acf_values):
+                #     stationary_subsequences.append(subsequence)
+                # else:
+                #     non_stationary_subsequences.append(subsequence)
+            else:
+                non_stationary_subsequences.append(subsequence)
+        
+        stat_dataframe_merged = pd.concat(stationary_subsequences)
+        non_stat_dataframe_merged = pd.concat(non_stationary_subsequences)
+        
+        # # Save the subsequences plot and autocorrelation to /Figures/Autocorrelation
+        # figures_folder = "Figures/Autocorrelation"
+        # if not os.path.exists(figures_folder):
+        #     os.makedirs(figures_folder)
+
+        # for i, subsequence in enumerate(stationary_subsequences + non_stationary_subsequences):
+        #     fig, (ax1, ax2)= plt.subplots(1, 2, figsize=(12, 4))
+        #     ax1.plot(subsequence[self.selected_column])
+        #     plot_acf(subsequence[self.selected_column], ax=ax2)
+        #     data_from = subsequence[self.selected_column].index[0]
+        #     data_to = subsequence[self.selected_column].index[-1]
+        #     plt.suptitle(f"Subsequence {data_from} to {data_to}")
+        #     plt.savefig(f"{figures_folder}/subsequence_{i+1}.png")
+        #     plt.close(fig)
+
+        # Plot the entire sequence on the canvas with different colors for stationary and non-stationary subsequences
+        self.ax.cla()
+
+        # Create masks for stationary and non-stationary subsequences
+        stationary_mask = df_selected.index.isin(stat_dataframe_merged.index)
+        non_stationary_mask = df_selected.index.isin(non_stat_dataframe_merged.index)
+
+        # Plot the entire sequence, stationary subsequences, and non-stationary subsequences
+        self.ax.plot(df_selected[self.selected_column], label="Entire sequence", color='k', alpha=0.8)
+        self.ax.plot(df_selected[stationary_mask][self.selected_column], color='darkgreen',
+                      label="Stationary subsequences", linestyle='', marker='o', markersize=0.1)
+        self.ax.plot(df_selected[non_stationary_mask][self.selected_column], color='crimson',
+                      label="Non-stationary subsequences", linestyle='', marker='o', markersize=0.1)
+        # Set labels, title, and grid
+        self.ax.set_ylabel(self.selected_column)
+        self.ax.grid()
+        self.ax.set_xlabel('Timestamp')
+        self.ax.set_title(f"{self.selected_column} vs Timestamp (Green: Stationary, Red: Non-stationary)")
+        # Add a legend
+        self.ax.legend()
+        # Redraw the figure on the canvas
+        self.canvas.draw()
+        self.analyze_stationarity_and_acf_button.config(state='normal')
+        
     def disconnect(self):
         if self.connection is not None:
             self.connection.close()
