@@ -25,7 +25,7 @@ class UtilityTool(tk.Tk):
         super().__init__()
 
         self.title("Utility Tool")
-        self.geometry("1000x1000")
+        self.geometry("1200x1200")
 
         # Create input fields and labels for the database, user, and password
         tk.Label(self, text="Database Name:").grid(row=0, column=0, sticky="w")
@@ -87,6 +87,13 @@ class UtilityTool(tk.Tk):
         self.canvas_frame.grid_rowconfigure(0, weight=1)
         self.canvas_frame.grid_columnconfigure(0, weight=1)
 
+        # Create the dropdown list for subsequences
+        self.subsequence_var = tk.StringVar()
+        self.subsequence_dropdown = ttk.Combobox(self, textvariable=self.subsequence_var)
+        self.subsequence_dropdown.grid(row=9, column=3)  
+        # Bind the selection event of the dropdown list
+        self.subsequence_dropdown.bind("<<ComboboxSelected>>", self.plot_selected_subsequence_autocorrelation)
+        
         # Create a canvas and add it to the new frame
         figure = Figure(figsize=(5, 4), dpi=100)
         self.ax = figure.add_subplot(111)  # Initialize the axis
@@ -356,12 +363,17 @@ class UtilityTool(tk.Tk):
         df = df.set_index('timestamp')
         df_selected = pd.DataFrame(pd.to_numeric(df[self.selected_column], errors='coerce'), columns=df.columns).fillna(df[self.selected_column].mean)
         df_selected = self.replace_values_above_threshold_and_nans(df_selected, 10000)
+        
         # Split into subsequences
         subsequences = []
         for value, group in df_selected.groupby((df_selected[self.selected_column] == 0).cumsum()):
             if not group[self.selected_column].eq(0).all():
                 subsequences.append(group)
 
+        # Fill the dropdown list with subsequences
+        self.subsequence_names = [f"Subsequence {i}" for i, _ in enumerate(subsequences)]
+        self.subsequence_dropdown['values'] = self.subsequence_names
+        self.subsequences = subsequences
         # Perform ADF test and check the convergence of the autocorrelation function for each subsequence
         stationary_subsequences = []
         non_stationary_subsequences = []
@@ -372,11 +384,6 @@ class UtilityTool(tk.Tk):
             adf_p_value = result[1]
             if adf_p_value < 0.05:
                 stationary_subsequences.append(subsequence)  # Threshold for stationarity
-                # acf_values = sm.tsa.acf(subsequence[self.selected_column], nlags=40, fft=False, alpha=None)
-                # if self.autocorrelation_converges_to_zero(acf_values):
-                #     stationary_subsequences.append(subsequence)
-                # else:
-                #     non_stationary_subsequences.append(subsequence)
             else:
                 non_stationary_subsequences.append(subsequence)
         
@@ -406,7 +413,7 @@ class UtilityTool(tk.Tk):
         non_stationary_mask = df_selected.index.isin(non_stat_dataframe_merged.index)
 
         # Plot the entire sequence, stationary subsequences, and non-stationary subsequences
-        self.ax.plot(df_selected[self.selected_column], label="Entire sequence", color='k', alpha=0.8)
+        self.ax.plot(df_selected[self.selected_column], label="Entire sequence", alpha=0.6)
         self.ax.plot(df_selected[stationary_mask][self.selected_column], color='darkgreen',
                       label="Stationary subsequences", linestyle='', marker='o', markersize=0.1)
         self.ax.plot(df_selected[non_stationary_mask][self.selected_column], color='crimson',
@@ -422,6 +429,21 @@ class UtilityTool(tk.Tk):
         self.canvas.draw()
         self.analyze_stationarity_and_acf_button.config(state='normal')
         
+    def plot_selected_subsequence_autocorrelation(self, event):
+        selected_index = self.subsequence_names.index(self.subsequence_var.get())
+        selected_subsequence = self.subsequences[selected_index]
+        data_from = selected_subsequence.index[0]
+        data_to = selected_subsequence.index[-1]
+        # Clear the previous plot if any
+        self.ax.cla()
+        # Plot the autocorrelation
+        plot_acf(selected_subsequence[self.selected_column], ax=self.ax)
+        self.ax.set_title(f'Autocorrelation from {data_from} to {data_to}')
+        self.ax.grid()
+
+        # Redraw the figure on the canvas
+        self.canvas.draw()
+
     def disconnect(self):
         if self.connection is not None:
             self.connection.close()
